@@ -1,0 +1,4 @@
+run the cloudformation script
+aws cloudformation create-stack \
+  --stack-name myteststack \
+  --template-body file://<localpath>
