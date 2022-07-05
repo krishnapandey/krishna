@@ -1,0 +1,186 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Resources:
+  SQSQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      VisibilityTimeout: 180
+  SQSQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref SQSQueue
+      PolicyDocument:
+        Id: AllowIncomingAccess
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              AWS:
+                - !Ref AWS::AccountId
+            Action:
+              - sqs:SendMessage
+              - sqs:ReceiveMessage
+            Resource:
+              - !GetAtt SQSQueue.Arn
+            Effect: Allow
+            Principal: '*'
+            Action:
+              - sqs:SendMessage
+            Resource:
+              - !GetAtt SQSQueue.Arn  
+  LambdaExecutionRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+      - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      - 'arn:aws:iam::aws:policy/AmazonSQSFullAccess'
+      - 'arn:aws:iam::aws:policy/AmazonS3FullAccess'
+    
+  FunctionInvokePermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      SourceArn:
+        Ref: SQSQueue
+      FunctionName:
+        Ref: lambdaFunction
+        Principal: sqs.amazonaws.com
+  SNSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: Ref snsTopic
+      Endpoint: !GetAtt SQSQueue.Arn
+      Protocol: sqs
+      RawMessageDelivery: true
+
+  snsTopic: 
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: snstopic-alert
+      DisplayName: snstopic-alert
+  
+  mybucketpolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      PolicyDocument:
+        Id: MyPolicy
+        Version: '2012-10-17'
+        Statement:
+        - Sid: ReadAccess
+          Action:
+          - s3:GetObject
+          Effect: Allow
+          Resource: !Sub "arn:aws:s3:::${s3Bucket}/*"
+          Principal:
+            AWS: !GetAtt s3Bucket.Arn
+      Bucket: Ref s3Bucket  
+
+  s3Bucket:
+    Type: AWS::S3::Bucket
+    Properties: 
+      AccessControl: Private
+      BucketName: sqs-s3-test543
+      LifecycleConfiguration:
+        Rules:
+          - Id: LambdaRules
+            Prefix: rules
+            Status: Enabled
+            ExpirationInDays: 365
+            Transitions:
+             - TransitionInDays: 1
+               StorageClass: GLACIER 
+      VersioningConfiguration:
+          Status: Enabled
+  S3Roles:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: s3.amazonaws.com
+          Resource:
+            Ref:  s3Bucket
+          Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+      - 'arn:aws:iam::aws:policy/AmazonS3ReadOnly'
+
+
+###Lambda code
+
+  lambdaFunction:
+      Type: AWS::Lambda::Function
+      Properties:
+        Description: Lambda function SQS Queue
+        FunctionName: SQSLambda
+        Handler: index.lambda_handler
+        Events:
+          SQS:
+            Type: SQS
+            Properties:
+              Topic:
+                Ref: SQSQueue
+        MemorySize: 128
+        Role:
+          - Ref: LambdaExecutionRole
+        Runtime: python3.6
+        Timeout: 10
+        VpcConfig:
+          SecurityGroupIds:
+            - default
+          SubnetIds:
+            - default
+        Environment:
+          Variables:
+            s3bucketname: !Ref s3Bucket
+
+        Code: 
+          ZipFile: |
+              import boto3
+              
+              # Create SQS client
+              sqs = boto3.client('sqs')
+              
+              queue_url = 'SQS_QUEUE_URL'
+              
+              # Receive message from SQS queue
+              response = sqs.receive_message(
+                  QueueUrl=queue_url,
+                  AttributeNames=[
+                      'SentTimestamp'
+                  ],
+                  MaxNumberOfMessages=1,
+                  MessageAttributeNames=[
+                      'All'
+                  ],
+                  VisibilityTimeout=0,
+                  WaitTimeSeconds=0
+              )
+
+              def s3event(event)
+                client = boto3.client('s3')
+                message = response['Messages'][0]
+                client.put_object(Body=%s, Bucket=%s, Key='my/key/', message, s3bucketname)
+                
+                return event
+
+
+        Tags:
+          - Key: Name
+            Value: Cloudformation
+
+
+Outputs:
+  BucketName:
+    Value:
+      Ref: s3Bucket
+  
